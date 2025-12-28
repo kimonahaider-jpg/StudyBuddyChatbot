@@ -1,17 +1,211 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Study Buddy</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Study Buddy AI</title>
+    <style>
+        :root { 
+            --primary-color: #4a90e2; 
+            --bg-color: #f4f7f6; 
+            --chat-bg: #ffffff; 
+            --user-msg: #4a90e2; 
+            --bot-msg: #f1f1f1; 
+            --sidebar-bg: #2c3e50;
+        }
+
+        /* Essential Reset: This prevents the overlapping issue */
+        * { box-sizing: border-box; }
+
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: var(--bg-color); 
+            margin: 0; 
+            display: flex; 
+            height: 100vh; 
+            overflow: hidden; 
+        }
+
+        .container { 
+            display: flex; 
+            width: 100%; 
+            height: 100vh; 
+            background: white; 
+        }
+
+        /* --- SIDEBAR --- */
+        .sidebar {
+            width: 350px;
+            background: var(--sidebar-bg);
+            color: white;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #ddd;
+            height: 100vh; 
+            flex-shrink: 0; /* Prevents sidebar from squishing */
+        }
+
+        .sidebar h3 { margin-top: 0; margin-bottom: 5px; }
+
+        /* The Box Fix: width 100% with proper padding */
+        #noteInput {
+            width: 100%;
+            height: 150px; 
+            min-height: 150px;
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            resize: none; 
+            border: 2px solid #1a252f;
+            background: white;
+            color: black;
+            font-size: 14px;
+        }
+
+        .sidebar button {
+            width: 100%; /* Makes button fill width properly */
+            background: #27ae60; 
+            color: white; 
+            border: none; 
+            padding: 12px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        #summaryResult {
+            margin-top: 10px;
+            font-size: 14px;
+            line-height: 1.5;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            flex-grow: 1;      
+            max-height: 60vh;  
+            overflow-y: auto;  
+        }
+
+        /* --- CHAT AREA --- */
+        .chat-area { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            background: var(--chat-bg); 
+            min-width: 0; /* Allows content to shrink if needed */
+        }
+
+        #messages { 
+            flex: 1; 
+            padding: 20px; 
+            overflow-y: auto; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 15px; 
+        }
+
+        .message { 
+            max-width: 80%; 
+            padding: 12px 16px; 
+            border-radius: 18px; 
+            font-size: 14px; 
+        }
+
+        .user-message { align-self: flex-end; background-color: var(--user-msg); color: white; border-bottom-right-radius: 2px; }
+        .bot-message { align-self: flex-start; background-color: var(--bot-msg); color: #333; border-bottom-left-radius: 2px; }
+
+        .input-group { 
+            padding: 20px; 
+            border-top: 1px solid #eee; 
+            display: flex; 
+            gap: 10px; 
+            background: white;
+        }
+
+        #userInput { flex: 1; border: 1px solid #ddd; border-radius: 25px; padding: 12px 20px; outline: none; }
+        .input-group button { background: var(--primary-color); color: white; border: none; padding: 0 25px; border-radius: 25px; cursor: pointer; font-weight: bold; }
+
+        /* Nice Scrollbars */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #4a90e2; border-radius: 10px; }
+    </style>
 </head>
 <body>
 
-<h2>📘 Study Buddy</h2>
+<div class="container">
+    <div class="sidebar">
+        <h3>📝 Summarizer</h3>
+        <p style="font-size: 12px; color: #bdc3c7; margin-bottom: 10px;">Paste notes for bullet points.</p>
+        <textarea id="noteInput" placeholder="Paste study material here..."></textarea>
+        <button onclick="summarizeNotes()">Summarize Notes</button>
+        <div id="summaryResult">Summary will appear here...</div>
+    </div>
 
-<div id="messages"></div>
+    <div class="chat-area">
+        <div style="padding: 15px; border-bottom: 1px solid #eee; text-align: center;">
+            <h2 style="margin: 0; color: #2c3e50;">📘 Study Buddy AI</h2>
+        </div>
+        <div id="messages"></div>
+        <div class="input-group">
+            <input type="text" id="userInput" placeholder="Ask a study question..." onkeypress="if(event.key==='Enter')sendChat()">
+            <button onclick="sendChat()">Send</button>
+        </div>
+    </div>
+</div>
 
-<input id="input" placeholder="Type a message..." />
-<button onclick="send()">Send</button>
+<script>
+    async function sendChat() {
+        const input = document.getElementById('userInput');
+        const text = input.value.trim();
+        if (!text) return;
+        
+        addMessage(text, true);
+        input.value = '';
 
-<script src="script.js"></script>
+        try {
+            const response = await fetch('http://localhost:5000/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            });
+            const data = await response.json();
+            addMessage(data.reply, false);
+        } catch (e) {
+            addMessage("⚠️ Backend Error. Is app.py running?", false);
+        }
+    }
+
+    async function summarizeNotes() {
+        const note = document.getElementById('noteInput').value;
+        const result = document.getElementById('summaryResult');
+        if (!note) return;
+
+        result.innerText = "⏳ Summarizing...";
+        try {
+            const response = await fetch('http://localhost:5000/summarize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: note })
+            });
+            const data = await response.json();
+            result.innerText = data.summary;
+        } catch (e) {
+            result.innerText = "⚠️ Error summarizing.";
+        }
+    }
+
+    function addMessage(text, isUser) {
+        const div = document.createElement('div');
+        div.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+        div.innerText = text;
+        const msgBox = document.getElementById('messages');
+        msgBox.appendChild(div);
+        msgBox.scrollTop = msgBox.scrollHeight;
+    }
+</script>
+
 </body>
 </html>

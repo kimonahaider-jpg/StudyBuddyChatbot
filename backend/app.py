@@ -3,88 +3,105 @@ from flask_cors import CORS
 import sqlite3
 import os
 import requests
+from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)
 
 # --- CONFIGURATION & PATHS ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "../database/study_buddy.db")
-SCHEMA_PATH = os.path.join(BASE_DIR, "../database/schema.sql")
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent 
+DB_DIR = ROOT_DIR / "database"
+DB_PATH = DB_DIR / "study_buddy.db"
+SCHEMA_PATH = DB_DIR / "schema.sql"
 
-# --- DATABASE SETUP ---
 def init_db():
-    """Creates the database and table if they don't exist."""
-    if not os.path.exists(DB_PATH):
-        print("Creating database file...")
-    
-    with sqlite3.connect(DB_PATH) as conn:
-        with open(SCHEMA_PATH, 'r') as f:
-            conn.executescript(f.read())
-    print("✅ Database initialized.")
+    try:
+        if not DB_DIR.exists():
+            DB_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH))
+        if SCHEMA_PATH.exists():
+            with open(SCHEMA_PATH, 'r') as f:
+                conn.executescript(f.read())
+            print(f"✅ Database ready at: {DB_PATH}")
+        conn.close()
+    except Exception as e:
+        print(f"❌ Database Error: {e}")
 
-# --- ROUTES ---
 @app.route("/")
 def home():
-    return jsonify({"status": "running", "message": "Study Buddy API is active!"})
+    return jsonify({"status": "Online"})
 
+# --- CHAT ROUTE ---
 @app.route("/chat", methods=["POST"])
 def chat():
     user_message = request.json.get("message", "").strip()
-    if not user_message:
-        return jsonify({"reply": "❗ Please type something."})
-
-    # 1. Fetch History from Database (Memory)
     history_context = ""
+    
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(str(DB_PATH)) as conn:
             cur = conn.cursor()
-            # Get last 5 messages
-            cur.execute("SELECT role, message FROM chat_history ORDER BY id DESC LIMIT 5")
+            cur.execute("SELECT role, message FROM chat_history ORDER BY id DESC LIMIT 3")
             rows = cur.fetchall()
             for role, msg in reversed(rows):
                 history_context += f"{role}: {msg}\n"
-    except Exception as e:
-        print(f"Database error: {e}")
+    except: pass
 
-    # 2. Prepare the AI Prompt
-    full_prompt = f"""
-    You are a friendly, helpful offline Study Buddy. 
-    Use the following chat history for context.
-    
-    History:
-    {history_context}
-    
-    Current User Message: {user_message}
-    Buddy:"""
+    # THE SECRET SAUCE: We use "###" to block the AI from rambling
+    full_prompt = f"""### SYSTEM:
+You are 'Study Buddy', a helpful AI tutor for Kumail.
+Answer ONLY as 'Assistant'. 
+Give a short 1-sentence answer. 
+Stop immediately after your sentence.
 
-    # 3. Call Ollama (Local AI)
+### HISTORY:
+{history_context}
+
+### NEW MESSAGE:
+User: {user_message}
+Assistant:"""
+
     try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
+        # We add 'stop' tokens to tell Ollama exactly where to cut off the AI
+        response = requests.post("http://localhost:11434/api/generate",
             json={
-                "model": "llama3.2:1b",
-                "prompt": full_prompt,
-                "stream": False
-            },
-            timeout=30 # Wait up to 30 seconds for AI to think
-        )
-        reply = response.json().get("response", "🤖 Sorry, I couldn't generate a response.")
+                "model": "tinydolphin", 
+                "prompt": full_prompt, 
+                "stream": False,
+                "options": {
+                    "stop": ["User:", "###", "\n"]
+                }
+            }, timeout=45)
+        reply = response.json().get("response", "").strip()
+        # Remove any accidental "User:" parts if the AI still hallucinated
+        reply = reply.split("User:")[0].strip()
     except:
-        reply = "⚠️ Ollama is not responding. Is the Ollama app open and running?"
+        reply = "⚠️ Ollama error."
 
-    # 4. Save both messages to the Database
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(str(DB_PATH)) as conn:
             cur = conn.cursor()
-            cur.execute("INSERT INTO chat_history (role, message) VALUES (?, ?)", ("user", user_message))
-            cur.execute("INSERT INTO chat_history (role, message) VALUES (?, ?)", ("assistant", reply))
+            cur.execute("INSERT INTO chat_history (role, message) VALUES (?, ?)", ("User", user_message))
+            cur.execute("INSERT INTO chat_history (role, message) VALUES (?, ?)", ("Assistant", reply))
             conn.commit()
-    except Exception as e:
-        print(f"Failed to save to DB: {e}")
+    except: pass
 
     return jsonify({"reply": reply})
 
+# --- SUMMARIZER ROUTE ---
+@app.route("/summarize", methods=["POST"])
+def summarize():
+    text = request.json.get("text", "").strip()
+    if not text: return jsonify({"summary": "Paste notes first!"})
+    
+    prompt = f"Summarize into 3 bullet points:\n{text}"
+    try:
+        response = requests.post("http://localhost:11434/api/generate",
+            json={"model": "tinydolphin", "prompt": prompt, "stream": False}, timeout=60)
+        return jsonify({"summary": response.json().get("response", "")})
+    except:
+        return jsonify({"summary": "⚠️ Error."})
+    
 if __name__ == "__main__":
-    init_db() # Ensures the table exists before starting
+    init_db()
     app.run(port=5000, debug=True)
