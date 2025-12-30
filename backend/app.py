@@ -32,52 +32,61 @@ def init_db():
 def home():
     return jsonify({"status": "Online"})
 
-# --- CHAT ROUTE ---
+# --- CHAT ROUTE (FIXED VERSION) ---
 @app.route("/chat", methods=["POST"])
 def chat():
     user_message = request.json.get("message", "").strip()
     history_context = ""
     
+    # 1. GET HISTORY
     try:
         with sqlite3.connect(str(DB_PATH)) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT role, message FROM chat_history ORDER BY id DESC LIMIT 3")
+            cur.execute("SELECT role, message FROM chat_history ORDER BY id DESC LIMIT 2")
             rows = cur.fetchall()
             for role, msg in reversed(rows):
                 history_context += f"{role}: {msg}\n"
     except: pass
 
-    # THE SECRET SAUCE: We use "###" to block the AI from rambling
-    full_prompt = f"""### SYSTEM:
-You are 'Study Buddy', a helpful AI tutor for Kumail.
-Answer ONLY as 'Assistant'. 
-Give a short 1-sentence answer. 
-Stop immediately after your sentence.
+    # 2. CREATE PROMPT (Strict "Teacher" Mode)
+    # We explicitly tell it NOT to be the user.
+    full_prompt = f"""Instructions: You are a helpful AI tutor. 
+    Do not simulate the user. Answer the question directly and briefly.
 
-### HISTORY:
-{history_context}
+    Previous Chat:
+    {history_context}
 
-### NEW MESSAGE:
-User: {user_message}
-Assistant:"""
+    User: {user_message}
+    Assistant:"""
+
+    reply = ""
 
     try:
-        # We add 'stop' tokens to tell Ollama exactly where to cut off the AI
+        # 3. CALL OLLAMA
         response = requests.post("http://localhost:11434/api/generate",
             json={
                 "model": "tinydolphin", 
                 "prompt": full_prompt, 
-                "stream": False,
-                "options": {
-                    "stop": ["User:", "###", "\n"]
-                }
+                "stream": False
             }, timeout=45)
+            
         reply = response.json().get("response", "").strip()
-        # Remove any accidental "User:" parts if the AI still hallucinated
-        reply = reply.split("User:")[0].strip()
-    except:
-        reply = "⚠️ Ollama error."
+        
+        # 4. CLEANUP (The "Janitor" work)
+        # Remove labels like "Assistant:" or "User:" so the bot sounds natural
+        reply = reply.replace("Assistant:", "").replace("User:", "").strip()
+        
+        # 5. SAFETY NET (If AI returns nothing, force a message)
+        if not reply:
+            reply = "🤔 I'm not sure how to answer that. Could you rephrase?"
 
+        print(f"🤖 AI SAID: {reply}") 
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        reply = "⚠️ Connection error."
+
+    # 6. SAVE TO DB
     try:
         with sqlite3.connect(str(DB_PATH)) as conn:
             cur = conn.cursor()
@@ -86,6 +95,7 @@ Assistant:"""
             conn.commit()
     except: pass
 
+    # 7. SEND TO FRONTEND (Key must be 'response' to match script.js)
     return jsonify({"reply": reply})
 
 # --- SUMMARIZER ROUTE ---
